@@ -394,6 +394,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   const btn = interaction as ButtonInteraction;
   const userId = btn.user.id;
+
+  try {
   const channelId = btn.channelId;
 
   // ── Class selection ──
@@ -520,12 +522,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
       unlockUser(userId, channelId);
     }
   }
+  } catch (err) {
+    logger.error({ err }, "Unhandled interaction error");
+  }
 });
 
 // ─── Bot startup ──────────────────────────────────────────────────────────────
 
 client.once(Events.ClientReady, (c) => {
   logger.info({ tag: c.user.tag }, "Discord bot online");
+});
+
+// Prevent unhandled Discord errors from crashing the process
+client.on(Events.Error, (err) => {
+  logger.error({ err }, "Discord client error (handled)");
 });
 
 export async function startBot() {
