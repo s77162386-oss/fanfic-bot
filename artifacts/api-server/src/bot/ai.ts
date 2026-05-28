@@ -2,15 +2,21 @@ import { logger } from "../lib/logger";
 import type { Character } from "./story";
 
 const POLLINATIONS_URL = "https://text.pollinations.ai/openai";
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 2000;
 
 interface Message {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-export async function generateStory(messages: Message[]): Promise<string> {
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchOnce(messages: Message[]): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 28000);
 
   try {
     const response = await fetch(POLLINATIONS_URL, {
@@ -27,22 +33,46 @@ export async function generateStory(messages: Message[]): Promise<string> {
 
     if (!response.ok) {
       const text = await response.text();
-      logger.error({ status: response.status, text }, "Pollinations API error");
+      logger.warn({ status: response.status, text }, "Pollinations API error");
       throw new Error(`AI error: ${response.status}`);
     }
 
     const data = (await response.json()) as {
       choices: { message: { content: string } }[];
     };
-    return data.choices[0]?.message?.content ?? "";
+    const content = data.choices[0]?.message?.content ?? "";
+    if (!content) throw new Error("Empty response from AI");
+    return content;
   } catch (err) {
     if ((err as Error).name === "AbortError") {
-      throw new Error("A IA demorou demais para responder (timeout de 25s).");
+      throw new Error("timeout");
     }
     throw err;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function generateStory(messages: Message[]): Promise<string> {
+  let lastErr: Error = new Error("Unknown error");
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fetchOnce(messages);
+    } catch (err) {
+      lastErr = err as Error;
+      const isTimeout = lastErr.message === "timeout";
+      logger.warn(
+        { attempt, error: lastErr.message },
+        isTimeout ? "AI timeout, retrying..." : "AI error, retrying...",
+      );
+      if (attempt < MAX_RETRIES) {
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  throw new Error(`A IA não respondeu após ${MAX_RETRIES} tentativas: ${lastErr.message}`);
 }
 
 export function buildSystemPrompt(character: Character): string {
