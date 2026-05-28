@@ -22,11 +22,35 @@ export interface PendingSetup {
   classe?: string;
 }
 
-const sessions = new Map<string, StorySession>();
-const pendingSetups = new Map<string, PendingSetup>();
+const SESSION_TTL_MS = 30 * 60 * 1000;
+
+interface StoredSession extends StorySession {
+  updatedAt: number;
+}
+
+interface StoredPendingSetup extends PendingSetup {
+  createdAt: number;
+}
+
+const sessions = new Map<string, StoredSession>();
+const pendingSetups = new Map<string, StoredPendingSetup>();
 
 export function getSessionKey(userId: string, channelId: string) {
   return `${channelId}:${userId}`;
+}
+
+export function cleanupExpiredSessions() {
+  const now = Date.now();
+  for (const [key, session] of sessions) {
+    if (now - session.updatedAt > SESSION_TTL_MS) {
+      sessions.delete(key);
+    }
+  }
+  for (const [key, setup] of pendingSetups) {
+    if (now - setup.createdAt > SESSION_TTL_MS) {
+      pendingSetups.delete(key);
+    }
+  }
 }
 
 export function createPendingSetup(
@@ -35,7 +59,7 @@ export function createPendingSetup(
   username: string,
   theme: string,
 ): PendingSetup {
-  const setup: PendingSetup = { userId, channelId, username, theme };
+  const setup: StoredPendingSetup = { userId, channelId, username, theme, createdAt: Date.now() };
   pendingSetups.set(getSessionKey(userId, channelId), setup);
   return setup;
 }
@@ -58,13 +82,14 @@ export function createSession(
   theme: string,
   systemPrompt: string,
 ): StorySession {
-  const session: StorySession = {
+  const session: StoredSession = {
     userId,
     channelId,
     character,
     theme,
     messages: [{ role: "system", content: systemPrompt }],
     choices: [],
+    updatedAt: Date.now(),
   };
   sessions.set(getSessionKey(userId, channelId), session);
   return session;
@@ -74,7 +99,9 @@ export function getSession(
   userId: string,
   channelId: string,
 ): StorySession | undefined {
-  return sessions.get(getSessionKey(userId, channelId));
+  const session = sessions.get(getSessionKey(userId, channelId));
+  if (session) session.updatedAt = Date.now();
+  return session;
 }
 
 export function deleteSession(userId: string, channelId: string) {
@@ -99,7 +126,9 @@ export function buildStoryText(session: StorySession, username: string): string 
   const lines: string[] = [];
   lines.push("=".repeat(50));
   lines.push(`FANFIC INTERATIVA — ${username}`);
-  lines.push(`Personagem: ${session.character.name} | ${session.character.classe} | ${session.character.trait}`);
+  lines.push(
+    `Personagem: ${session.character.name} | ${session.character.classe} | ${session.character.trait}`,
+  );
   lines.push(`Tema: ${session.theme || "Fantasia/Aventura"}`);
   lines.push(`Data: ${new Date().toLocaleString("pt-BR")}`);
   lines.push("=".repeat(50));
