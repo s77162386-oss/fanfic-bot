@@ -9,27 +9,40 @@ interface Message {
 }
 
 export async function generateStory(messages: Message[]): Promise<string> {
-  const response = await fetch(POLLINATIONS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "openai",
-      messages,
-      max_tokens: 300,
-      temperature: 0.9,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
 
-  if (!response.ok) {
-    const text = await response.text();
-    logger.error({ status: response.status, text }, "Pollinations API error");
-    throw new Error(`AI error: ${response.status}`);
+  try {
+    const response = await fetch(POLLINATIONS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "openai",
+        messages,
+        max_tokens: 220,
+        temperature: 0.9,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      logger.error({ status: response.status, text }, "Pollinations API error");
+      throw new Error(`AI error: ${response.status}`);
+    }
+
+    const data = (await response.json()) as {
+      choices: { message: { content: string } }[];
+    };
+    return data.choices[0]?.message?.content ?? "";
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      throw new Error("A IA demorou demais para responder (timeout de 25s).");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = (await response.json()) as {
-    choices: { message: { content: string } }[];
-  };
-  return data.choices[0]?.message?.content ?? "";
 }
 
 export function buildSystemPrompt(character: Character): string {
@@ -41,16 +54,15 @@ Personagem do jogador:
 - Classe: ${character.classe}
 - Traço de personalidade: ${character.trait}
 
-Regras:
+Regras OBRIGATÓRIAS:
 - Escreva em português brasileiro
 - O protagonista é sempre ${character.name}, um(a) ${character.classe} ${character.trait}
-- Use as habilidades e personalidade da classe e traço nas situações da história
-- Cada trecho da história deve ter NO MÁXIMO 2 parágrafos curtos e diretos
+- Cada trecho deve ter NO MÁXIMO 1 parágrafo curto (máximo 3 frases)
 - Ao final de CADA resposta, inclua EXATAMENTE 3 opções de escolha numeradas assim:
   [1] (texto curto da opção 1)
   [2] (texto curto da opção 2)
   [3] (texto curto da opção 3)
-- As opções devem refletir o traço do personagem (${character.trait}) e sua classe (${character.classe})
+- As opções devem ser curtas (máximo 10 palavras cada)
 - Mantenha consistência com as escolhas anteriores
-- Deixe a história empolgante e com ganchos para o próximo trecho`;
+- Seja direto e conciso — brevidade é essencial`;
 }
