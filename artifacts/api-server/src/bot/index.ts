@@ -22,6 +22,7 @@ import {
   parseChoices,
   stripChoices,
   buildStoryText,
+  cleanupExpiredSessions,
   type Character,
 } from "./story";
 
@@ -33,6 +34,22 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
   ],
 });
+
+// ─── Processing lock (prevents duplicate AI calls per user) ──────────────────
+
+const processingUsers = new Set<string>();
+
+function lockUser(userId: string, channelId: string) {
+  processingUsers.add(`${channelId}:${userId}`);
+}
+
+function unlockUser(userId: string, channelId: string) {
+  processingUsers.delete(`${channelId}:${userId}`);
+}
+
+function isProcessing(userId: string, channelId: string) {
+  return processingUsers.has(`${channelId}:${userId}`);
+}
 
 // ─── Chapter counter ────────────────────────────────────────────────────────
 
@@ -48,6 +65,12 @@ function getNextChapter(userId: string, channelId: string): number {
 function resetChapter(userId: string, channelId: string) {
   chapterCounter.delete(`${channelId}:${userId}`);
 }
+
+// ─── Session cleanup (every 15 minutes) ─────────────────────────────────────
+
+setInterval(() => {
+  cleanupExpiredSessions();
+}, 15 * 60 * 1000);
 
 // ─── Character data ──────────────────────────────────────────────────────────
 
@@ -72,7 +95,6 @@ const TRAITS = [
 function buildClassButtons(): ActionRowBuilder<ButtonBuilder>[] {
   const row1 = new ActionRowBuilder<ButtonBuilder>();
   const row2 = new ActionRowBuilder<ButtonBuilder>();
-
   CLASSES.slice(0, 3).forEach((c) =>
     row1.addComponents(
       new ButtonBuilder()
@@ -89,14 +111,12 @@ function buildClassButtons(): ActionRowBuilder<ButtonBuilder>[] {
         .setStyle(ButtonStyle.Secondary),
     ),
   );
-
   return [row1, row2];
 }
 
 function buildTraitButtons(): ActionRowBuilder<ButtonBuilder>[] {
   const row1 = new ActionRowBuilder<ButtonBuilder>();
   const row2 = new ActionRowBuilder<ButtonBuilder>();
-
   TRAITS.slice(0, 3).forEach((t) =>
     row1.addComponents(
       new ButtonBuilder()
@@ -113,7 +133,6 @@ function buildTraitButtons(): ActionRowBuilder<ButtonBuilder>[] {
         .setStyle(ButtonStyle.Secondary),
     ),
   );
-
   return [row1, row2];
 }
 
@@ -148,12 +167,14 @@ function buildClassPickerEmbed(username: string): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle("🎭 Criação de Personagem")
-    .setDescription(`Olá, **${username}**! Antes de começar, escolha a **classe** do seu personagem:`)
+    .setDescription(
+      `Olá, **${username}**! Antes de começar, escolha a **classe** do seu personagem:`,
+    )
     .addFields(
-      { name: "⚔️ Guerreiro", value: "Força e combate corpo a corpo", inline: true },
-      { name: "🧙 Mago", value: "Magia e feitiços poderosos", inline: true },
-      { name: "🗡️ Ladino", value: "Furtividade e golpes precisos", inline: true },
-      { name: "🏹 Arqueiro", value: "Precisão e ataques à distância", inline: true },
+      { name: "⚔️ Guerreiro", value: "Força e combate", inline: true },
+      { name: "🧙 Mago", value: "Magia e feitiços", inline: true },
+      { name: "🗡️ Ladino", value: "Furtividade", inline: true },
+      { name: "🏹 Arqueiro", value: "Precisão à distância", inline: true },
       { name: "✨ Clérigo", value: "Cura e poder divino", inline: true },
     );
 }
@@ -162,13 +183,15 @@ function buildTraitPickerEmbed(classeLabel: string): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle("🎭 Criação de Personagem")
-    .setDescription(`Ótimo! Você será um **${classeLabel}**.\n\nAgora escolha o **traço de personalidade** do seu personagem:`)
+    .setDescription(
+      `Ótimo! Você será um **${classeLabel}**.\n\nAgora escolha o **traço de personalidade**:`,
+    )
     .addFields(
       { name: "💪 Corajoso", value: "Age sem hesitar", inline: true },
       { name: "🦊 Astuto", value: "Sempre tem um plano", inline: true },
       { name: "📚 Sábio", value: "Pensa antes de agir", inline: true },
-      { name: "🌪️ Impulsivo", value: "Corre riscos sem pensar", inline: true },
-      { name: "🌑 Misterioso", value: "Guarda segredos sombrios", inline: true },
+      { name: "🌪️ Impulsivo", value: "Corre riscos", inline: true },
+      { name: "🌑 Misterioso", value: "Guarda segredos", inline: true },
     );
 }
 
@@ -185,15 +208,20 @@ function buildCharacterConfirmEmbed(character: Character, theme: string): EmbedB
     .setFooter({ text: "Gerando sua história..." });
 }
 
-function buildStoryEmbed(narrative: string, chapter: number, character: Character, hasChoices: boolean): EmbedBuilder {
+function buildStoryEmbed(
+  narrative: string,
+  chapter: number,
+  character: Character,
+  hasChoices: boolean,
+): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle(`📖 Capítulo ${chapter}`)
-    .setDescription(narrative.slice(0, 4096))
+    .setDescription(narrative.slice(0, 3800))
     .setFooter({
       text: hasChoices
-        ? `${character.classe} ${character.trait} | Escolha como a história continua:`
-        : `${character.classe} ${character.trait} | Fim deste trecho.`,
+        ? `${character.classe} | Escolha como a história continua:`
+        : `${character.classe} | Fim deste trecho.`,
     });
 }
 
@@ -213,16 +241,15 @@ async function sendStoryChunk(
 
   const chapter = getNextChapter(userId, channelId);
   const embed = buildStoryEmbed(narrative, chapter, character, choices.length > 0);
-  const components = choices.length > 0
-    ? [buildChoiceButtons(choices), buildEndButton()]
-    : [buildEndButton()];
+  const components =
+    choices.length > 0 ? [buildChoiceButtons(choices), buildEndButton()] : [buildEndButton()];
 
   const payload = { embeds: [embed], components };
 
   if (isReply) {
     return await (target as Message).reply(payload);
   } else {
-    await (target as ButtonInteraction).deferUpdate();
+    // FIX: interaction already acknowledged via btn.update() — use followUp directly
     return await (target as ButtonInteraction).followUp(payload);
   }
 }
@@ -246,8 +273,14 @@ async function beginStory(
 
   session.messages.push({ role: "user", content: prompt });
 
-  const channel = "channel" in target ? (target as ButtonInteraction).channel : (target as Message).channel;
-  if (channel?.isSendable()) await channel.sendTyping();
+  const channel =
+    "channel" in target
+      ? (target as ButtonInteraction).channel
+      : (target as Message).channel;
+
+  if (channel?.isSendable()) {
+    channel.sendTyping().catch(() => undefined);
+  }
 
   try {
     const responseText = await generateStory(session.messages);
@@ -259,8 +292,9 @@ async function beginStory(
     logger.error({ err }, "Error generating story start");
     deleteSession(userId, channelId);
     resetChapter(userId, channelId);
+    const errMsg =
+      "❌ Erro ao gerar a história. Tente `!fanfic` novamente em alguns segundos.";
     try {
-      const errMsg = "❌ Erro ao gerar a história. Tente `!fanfic` novamente em alguns segundos.";
       if (isReply) {
         await (target as Message).reply(errMsg);
       } else {
@@ -269,6 +303,8 @@ async function beginStory(
     } catch (replyErr) {
       logger.error({ replyErr }, "Failed to send error reply");
     }
+  } finally {
+    unlockUser(userId, channelId);
   }
 }
 
@@ -311,6 +347,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
     deleteSession(userId, channelId);
     deletePendingSetup(userId, channelId);
     resetChapter(userId, channelId);
+    unlockUser(userId, channelId);
     await message.reply("🔄 Sessão resetada! Use `!fanfic` para começar uma nova história.");
     return;
   }
@@ -318,7 +355,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
   if (lower === "!fanfic save") {
     const session = getSession(userId, channelId);
     if (!session) {
-      await message.reply("❌ Você não tem nenhuma história em andamento. Use `!fanfic` para começar uma.");
+      await message.reply(
+        "❌ Você não tem nenhuma história em andamento. Use `!fanfic` para começar uma.",
+      );
       return;
     }
     const hasContent = session.messages.some((m) => m.role === "assistant");
@@ -361,18 +400,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (btn.customId.startsWith("class_")) {
     const pending = getPendingSetup(userId, channelId);
     if (!pending) {
-      await btn.reply({ content: "❌ Sessão expirada. Use `!fanfic` para começar.", ephemeral: true });
+      await btn.reply({
+        content: "❌ Sessão expirada. Use `!fanfic` para começar.",
+        ephemeral: true,
+      });
       return;
     }
-
     const classeId = btn.customId.replace("class_", "");
     const classeObj = CLASSES.find((c) => c.id === classeId);
     if (!classeObj) return;
-
     pending.classe = classeObj.label;
-
-    const embed = buildTraitPickerEmbed(classeObj.label);
-    await btn.update({ embeds: [embed], components: buildTraitButtons() });
+    await btn.update({ embeds: [buildTraitPickerEmbed(classeObj.label)], components: buildTraitButtons() });
     return;
   }
 
@@ -380,10 +418,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (btn.customId.startsWith("trait_")) {
     const pending = getPendingSetup(userId, channelId);
     if (!pending || !pending.classe) {
-      await btn.reply({ content: "❌ Sessão expirada. Use `!fanfic` para começar.", ephemeral: true });
+      await btn.reply({
+        content: "❌ Sessão expirada. Use `!fanfic` para começar.",
+        ephemeral: true,
+      });
       return;
     }
-
+    if (isProcessing(userId, channelId)) {
+      await btn.reply({ content: "⏳ Aguarde, já estou gerando sua história...", ephemeral: true });
+      return;
+    }
     const traitId = btn.customId.replace("trait_", "");
     const traitObj = TRAITS.find((t) => t.id === traitId);
     if (!traitObj) return;
@@ -393,12 +437,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       classe: pending.classe,
       trait: traitObj.label,
     };
-
     deletePendingSetup(userId, channelId);
+    lockUser(userId, channelId);
 
-    const confirmEmbed = buildCharacterConfirmEmbed(character, pending.theme);
-    await btn.update({ embeds: [confirmEmbed], components: [] });
-
+    await btn.update({ embeds: [buildCharacterConfirmEmbed(character, pending.theme)], components: [] });
     await beginStory(btn, userId, channelId, character, pending.theme, false);
     return;
   }
@@ -407,25 +449,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (btn.customId === "end_story") {
     deleteSession(userId, channelId);
     resetChapter(userId, channelId);
-    const endEmbed = new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle("✅ Fim da história")
-      .setDescription("*— A aventura chegou ao fim. Use `!fanfic` para começar uma nova! —*");
-    await btn.update({ embeds: [endEmbed], components: [] });
+    unlockUser(userId, channelId);
+    await btn.update({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x57f287)
+          .setTitle("✅ Fim da história")
+          .setDescription("*— A aventura chegou ao fim. Use `!fanfic` para começar uma nova! —*"),
+      ],
+      components: [],
+    });
     return;
   }
 
   // ── Story choice ──
   if (btn.customId.startsWith("choice_")) {
+    if (isProcessing(userId, channelId)) {
+      await btn.reply({ content: "⏳ Aguarde, já estou gerando o próximo trecho...", ephemeral: true });
+      return;
+    }
+
     const session = getSession(userId, channelId);
     if (!session) {
-      await btn.reply({ content: "❌ Sessão expirada. Use `!fanfic` para começar uma nova história.", ephemeral: true });
+      await btn.reply({
+        content: "❌ Sessão expirada. Use `!fanfic` para começar uma nova história.",
+        ephemeral: true,
+      });
       return;
     }
 
     const choiceIndex = parseInt(btn.customId.replace("choice_", ""), 10);
     const chosenText = session.choices[choiceIndex];
-
     if (!chosenText) {
       await btn.reply({ content: "❌ Opção inválida.", ephemeral: true });
       return;
@@ -436,6 +490,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       content: `Escolho a opção ${choiceIndex + 1}: ${chosenText}. Continue a história.`,
     });
 
+    lockUser(userId, channelId);
+
     const prevEmbed = btn.message.embeds[0];
     const updatedEmbed = prevEmbed
       ? EmbedBuilder.from(prevEmbed).setFooter({ text: `✅ Escolha: ${chosenText}` })
@@ -443,7 +499,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     await btn.update({ embeds: [updatedEmbed], components: [] });
 
-    if (btn.channel?.isSendable()) await btn.channel.sendTyping();
+    if (btn.channel?.isSendable()) {
+      btn.channel.sendTyping().catch(() => undefined);
+    }
 
     try {
       const responseText = await generateStory(session.messages);
@@ -458,6 +516,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       } catch (followErr) {
         logger.error({ followErr }, "Failed to send followUp error");
       }
+    } finally {
+      unlockUser(userId, channelId);
     }
   }
 });
